@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RTMP Server Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .server-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .info-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+
+        .info-item h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .info-item code {
+            background: #e9ecef;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            display: block;
+            margin-top: 5px;
+        }
+
+        .streams-section {
+            margin-top: 30px;
+        }
+
+        .streams-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-online {
+            background-color: #28a745;
+        }
+
+        .status-offline {
+            background-color: #dc3545;
+        }
+
+        .stream-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border-left: 4px solid #28a745;
+        }
+
+        .stream-item h4 {
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .stream-item p {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .no-streams {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+            padding: 40px;
+        }
+
+        .refresh-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .refresh-btn:hover {
+            background: #5a67d8;
+        }
+
+        .test-stream {
+            background: #e3f2fd;
+            border-left-color: #2196f3;
+        }
+
+        .test-stream h3 {
+            color: #2196f3;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .live-indicator {
+            animation: pulse 2s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎥 RTMP Server Dashboard</h1>
+            <p id="instanceInfo">Live Streaming Server Management Interface</p>
+        </div>
+
+        <div class="card">
+            <h2>Server Information</h2>
+            <div class="server-info" id="serverInfo">
+                <!-- Server info will be loaded dynamically -->
+            </div>
+        </div>
+
+        <div class="card test-stream">
+            <h3>🧪 Testing Your Stream</h3>
+            <p><strong>With OBS Studio:</strong></p>
+            <ol>
+                <li>Go to Settings → Stream</li>
+                <li>Set Service to "Custom..."</li>
+                <li>Set Server to: <code>rtmp://localhost:1935/live</code></li>
+                <li>Set Stream Key to: <code>test</code> (or any key you prefer)</li>
+                <li>Click "Start Streaming"</li>
+            </ol>
+            <p style="margin-top: 15px;"><strong>Test Playback:</strong></p>
+            <p>Open VLC Media Player → Media → Open Network Stream → Enter: <code>rtmp://localhost:1935/live/test</code></p>
+        </div>
+
+        <div class="card streams-section">
+            <div class="streams-header">
+                <h2>
+                    <span class="status-indicator" id="serverStatus"></span>
+                    Active Streams
+                </h2>
+                <button class="refresh-btn" onclick="refreshStreams()">Refresh</button>
+            </div>
+            <div id="streamsList">
+                <div class="no-streams">
+                    <p>No active streams. Start streaming to see them here!</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let serverOnline = true;
+        let serverConfig = {};
+
+        // Load server configuration
+        async function loadServerConfig() {
+            try {
+                const response = await fetch('/api/config');
+                serverConfig = await response.json();
+                updateServerInfo();
+                updateInstanceInfo();
+            } catch (error) {
+                console.error('Error loading server config:', error);
+            }
+        }
+
+        // Update instance information in header
+        function updateInstanceInfo() {
+            const instanceInfo = document.getElementById('instanceInfo');
+            if (serverConfig.instanceName) {
+                instanceInfo.textContent = `Instance: ${serverConfig.instanceName} (ID: ${serverConfig.instanceId}) - Live Streaming Server`;
+            }
+        }
+
+        // Update server information display
+        function updateServerInfo() {
+            const serverInfo = document.getElementById('serverInfo');
+            if (!serverConfig.rtmpUrl) return;
+
+            serverInfo.innerHTML = `
+                <div class="info-item">
+                    <h3>Instance Information</h3>
+                    <p>Server instance: <strong>${serverConfig.instanceName}</strong> (ID: ${serverConfig.instanceId})</p>
+                    <p>Authentication: <strong>${serverConfig.authEnabled ? 'Enabled' : 'Disabled'}</strong></p>
+                </div>
+
+                <div class="info-item">
+                    <h3>RTMP Stream URL</h3>
+                    <p>Use this URL in your streaming software (OBS, XSplit, etc.)</p>
+                    <code>${serverConfig.rtmpUrl}</code>
+                </div>
+
+                <div class="info-item">
+                    <h3>Stream Key</h3>
+                    <p>Use any stream key you want (e.g., "mystream")</p>
+                    <code>YOUR_STREAM_KEY</code>
+                </div>
+
+                <div class="info-item">
+                    <h3>HLS Playback URL</h3>
+                    <p>For web players and mobile apps</p>
+                    <code>${serverConfig.hlsUrl}/YOUR_STREAM_KEY/index.m3u8</code>
+                </div>
+
+                <div class="info-item">
+                    <h3>HTTP-FLV Playback URL</h3>
+                    <p>For low-latency web playback</p>
+                    <code>${serverConfig.flvUrl}/YOUR_STREAM_KEY.flv</code>
+                </div>
+            `;
+        }
+
+        // Update server status indicator
+        function updateServerStatus(online) {
+            const indicator = document.getElementById('serverStatus');
+            if (online) {
+                indicator.className = 'status-indicator status-online';
+            } else {
+                indicator.className = 'status-indicator status-offline';
+            }
+            serverOnline = online;
+        }
+
+        // Fetch and display active streams
+        async function refreshStreams() {
+            try {
+                const response = await fetch('/api/streams');
+                const streams = await response.json();
+                displayStreams(streams);
+                updateServerStatus(true);
+            } catch (error) {
+                console.error('Error fetching streams:', error);
+                updateServerStatus(false);
+            }
+        }
+
+        // Display streams in the UI
+        function displayStreams(streams) {
+            const streamsList = document.getElementById('streamsList');
+            
+            if (streams.length === 0) {
+                streamsList.innerHTML = `
+                    <div class="no-streams">
+                        <p>No active streams. Start streaming to see them here!</p>
+                    </div>
+                `;
+                return;
+            }
+
+            streamsList.innerHTML = streams.map(stream => `
+                <div class="stream-item">
+                    <h4>
+                        <span class="status-indicator status-online live-indicator"></span>
+                        Stream: ${stream.stream}
+                    </h4>
+                    <p><strong>App:</strong> ${stream.app}</p>
+                    <p><strong>Instance:</strong> ${stream.instance || 'Unknown'} (ID: ${stream.instanceId || 'N/A'})</p>
+                    <p><strong>Stream ID:</strong> ${stream.id}</p>
+                    <p><strong>Started:</strong> ${new Date(stream.startTime).toLocaleString()}</p>
+                    <p><strong>HLS URL:</strong> <code>${serverConfig.hlsUrl}/${stream.stream}/index.m3u8</code></p>
+                    <p><strong>FLV URL:</strong> <code>${serverConfig.flvUrl}/${stream.stream}.flv</code></p>
+                </div>
+            `).join('');
+        }
+
+        // Socket.io event listeners
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            updateServerStatus(true);
+            loadServerConfig();
+            refreshStreams();
+        });
+
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+            updateServerStatus(false);
+        });
+
+        socket.on('streamStarted', (data) => {
+            console.log('New stream started:', data);
+            refreshStreams();
+        });
+
+        socket.on('streamEnded', (data) => {
+            console.log('Stream ended:', data);
+            refreshStreams();
+        });
+
+        // Initial load
+        updateServerStatus(true);
+        loadServerConfig();
+        refreshStreams();
+
+        // Auto-refresh every 10 seconds
+        setInterval(refreshStreams, 10000);
+    </script>
+</body>
+</html>
