@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  srs:
+    image: ossrs/srs:5
+    container_name: srs-server
+    ports:
+      # RTMP port
+      - "1935:1935"
+      # HTTP API port
+      - "1985:1985"
+      # HTTP server port (for HLS/FLV)
+      - "8080:8080"
+      # WebRTC UDP ports
+      - "8000:8000/udp"
+    volumes:
+      # Configuration file (must override docker.conf which is the default)
+      - ./srs.conf:/usr/local/srs/conf/docker.conf
+      # DVR recordings storage
+      - ./recordings:/usr/local/srs/objs/nginx/html/recordings
+      # HLS files storage
+      - ./hls:/usr/local/srs/objs/nginx/html/hls
+      # Upload script
+      - ./scripts:/scripts
+    restart: unless-stopped
+    environment:
+      - CANDIDATE=${CANDIDATE}
+    networks:
+      - srs-network
+
+  # DVR uploader service - monitors and uploads recordings to DigitalOcean Spaces
+  dvr-uploader:
+    image: python:3.11-slim
+    container_name: dvr-uploader
+    volumes:
+      - ./recordings:/recordings
+      - ./scripts:/scripts
+      - ./uploaded:/uploaded
+    environment:
+      - SPACES_REGION=${SPACES_REGION}
+      - SPACES_BUCKET=${SPACES_BUCKET}
+      - SPACES_ACCESS_KEY=${SPACES_ACCESS_KEY}
+      - SPACES_SECRET_KEY=${SPACES_SECRET_KEY}
+      - SPACES_ENDPOINT=${SPACES_ENDPOINT}
+      - DELETE_AFTER_UPLOAD=${DELETE_AFTER_UPLOAD:-false}
+      - WEBHOOK_ENABLED=${WEBHOOK_ENABLED:-false}
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+    working_dir: /scripts
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt && python upload_to_spaces.py"
+    restart: unless-stopped
+    depends_on:
+      - srs
+    networks:
+      - srs-network
+
+networks:
+  srs-network:
+    driver: bridge
