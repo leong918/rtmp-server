@@ -38,6 +38,8 @@ services:
       - ./recordings:/recordings
       - ./scripts:/scripts
       - ./uploaded:/uploaded
+    extra_hosts:
+      - "tsport-new.localhost:192.168.0.82"
     environment:
       - SPACES_REGION=${SPACES_REGION}
       - SPACES_BUCKET=${SPACES_BUCKET}

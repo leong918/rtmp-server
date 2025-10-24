@@ -262,10 +262,18 @@ def scan_existing_files(handler: DVRFileHandler):
         for marker in UPLOADED_DIR.rglob('*.uploaded'):
             uploaded_files.add(marker.stem)
     
+    # Scan all .flv files
+    unuploaded_count = 0
     for flv_file in RECORDINGS_DIR.rglob('*.flv'):
         if flv_file.name not in uploaded_files:
-            logger.info(f"Found unuploaded file: {flv_file.name}")
+            logger.info(f"Found unuploaded file: {flv_file.name} ({flv_file.stat().st_size / 1024 / 1024:.2f} MB)")
             handler.upload_file(flv_file)
+            unuploaded_count += 1
+    
+    if unuploaded_count == 0:
+        logger.info("No unuploaded files found")
+    else:
+        logger.info(f"Processed {unuploaded_count} unuploaded files")
     
     logger.info("Initial scan complete")
 
@@ -306,6 +314,16 @@ def main():
             while True:
                 time.sleep(5)
                 handler.process_pending_uploads()
+                
+                # Every 5 minutes, rescan for missed files
+                if hasattr(main, '_last_scan_time'):
+                    if time.time() - main._last_scan_time > 300:  # 5 minutes
+                        logger.info("Performing periodic rescan for missed files...")
+                        scan_existing_files(handler)
+                        main._last_scan_time = time.time()
+                else:
+                    main._last_scan_time = time.time()
+                    
         except KeyboardInterrupt:
             logger.info("Shutting down...")
             observer.stop()
