@@ -16,6 +16,8 @@ from watchdog.events import FileSystemEventHandler
 import json
 import requests
 from typing import Optional
+import shutil
+import subprocess
 
 # Configure logging
 logging.basicConfig(
@@ -40,6 +42,10 @@ SPACES_CDN_URL = os.getenv('SPACES_CDN_URL', '')
 WEBHOOK_ENABLED = os.getenv('WEBHOOK_ENABLED', 'false').lower() == 'true'
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
 WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', '')
+
+# Environment variables - FFmpeg
+CONVERT_TO_MP4 = os.getenv('CONVERT_TO_MP4', 'false').lower() == 'true'
+FFMPEG_PATH = os.getenv('FFMPEG_PATH', 'ffmpeg')
 
 RECORDINGS_DIR = Path('/recordings')
 UPLOADED_DIR = Path('/uploaded')
@@ -103,6 +109,84 @@ class WebhookNotifier:
             return False
 
 
+class VideoConverter:
+    """Convert FLV files to MP4 using FFmpeg"""
+    
+    def __init__(self):
+        self.ffmpeg_path = FFMPEG_PATH
+        self.enabled = CONVERT_TO_MP4
+        
+        if self.enabled:
+            # Check if FFmpeg is available
+            if not shutil.which(self.ffmpeg_path):
+                logger.error(f"FFmpeg not found at: {self.ffmpeg_path}")
+                logger.error("Please install FFmpeg or set FFMPEG_PATH environment variable")
+                self.enabled = False
+            else:
+                logger.info(f"FFmpeg found: {self.ffmpeg_path}")
+                logger.info("FLV to MP4 conversion enabled")
+        else:
+            logger.info("FLV to MP4 conversion disabled")
+    
+    def convert_to_mp4(self, flv_path: Path) -> Optional[Path]:
+        """Convert FLV file to MP4"""
+        if not self.enabled:
+            return None
+        
+        if not flv_path.exists():
+            logger.error(f"FLV file not found: {flv_path}")
+            return None
+        
+        # Generate MP4 output path
+        mp4_path = flv_path.with_suffix('.mp4')
+        
+        try:
+            logger.info(f"Converting {flv_path.name} to MP4...")
+            
+            # FFmpeg command to convert FLV to MP4
+            # -i: input file
+            # -c:v copy: copy video codec (fast, no re-encoding)
+            # -c:a aac: convert audio to AAC
+            # -movflags +faststart: optimize for web streaming
+            cmd = [
+                self.ffmpeg_path,
+                '-i', str(flv_path),
+                '-c:v', 'copy',  # Copy video stream (fast)
+                '-c:a', 'aac',    # Convert audio to AAC
+                '-strict', 'experimental',
+                '-movflags', '+faststart',  # Optimize for streaming
+                '-y',  # Overwrite output file if exists
+                str(mp4_path)
+            ]
+            
+            # Run FFmpeg
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minutes timeout
+            )
+            
+            if result.returncode == 0 and mp4_path.exists():
+                mp4_size = mp4_path.stat().st_size
+                flv_size = flv_path.stat().st_size
+                logger.info(f"✓ Converted successfully: {mp4_path.name}")
+                logger.info(f"  FLV size: {flv_size / 1024 / 1024:.2f} MB")
+                logger.info(f"  MP4 size: {mp4_size / 1024 / 1024:.2f} MB")
+                return mp4_path
+            else:
+                logger.error(f"✗ Conversion failed for {flv_path.name}")
+                logger.error(f"FFmpeg output: {result.stderr}")
+                return None
+                
+        except subprocess.TimeoutExpired:
+            logger.error(f"✗ Conversion timeout for {flv_path.name}")
+            return None
+        except Exception as e:
+            logger.error(f"✗ Conversion error for {flv_path.name}: {e}")
+            return None
+
+
 class S3Uploader:
     """Handle uploads to DigitalOcean Spaces using S3 API"""
     
@@ -131,7 +215,7 @@ class S3Uploader:
                 str(local_path),
                 self.bucket,
                 s3_key,
-                ExtraArgs={'ACL': 'private'}
+                ExtraArgs={'ACL': 'public-read'}
             )
             
             logger.info(f"✓ Successfully uploaded: {s3_key}")
@@ -148,9 +232,10 @@ class S3Uploader:
 class DVRFileHandler(FileSystemEventHandler):
     """Monitor DVR recordings and upload completed files"""
     
-    def __init__(self, uploader: S3Uploader, webhook: WebhookNotifier):
+    def __init__(self, uploader: S3Uploader, webhook: WebhookNotifier, converter: VideoConverter):
         self.uploader = uploader
         self.webhook = webhook
+        self.converter = converter
         UPLOADED_DIR.mkdir(exist_ok=True)
     
     def on_created(self, event):
@@ -190,15 +275,29 @@ class DVRFileHandler(FileSystemEventHandler):
             return
         
         try:
+            # Convert FLV to MP4 if enabled
+            upload_file = file_path
+            original_file = file_path
+            
+            if file_path.suffix == '.flv' and self.converter.enabled:
+                logger.info(f"Converting {file_path.name} to MP4...")
+                mp4_file = self.converter.convert_to_mp4(file_path)
+                
+                if mp4_file:
+                    upload_file = mp4_file
+                    logger.info(f"Will upload MP4 version: {mp4_file.name}")
+                else:
+                    logger.warning(f"Conversion failed, will upload original FLV: {file_path.name}")
+            
             # Generate S3 key preserving directory structure
-            relative_path = file_path.relative_to(RECORDINGS_DIR)
+            relative_path = upload_file.relative_to(RECORDINGS_DIR)
             s3_key = f"dvr/{relative_path.as_posix()}"
             
             # Get file info
-            file_size = file_path.stat().st_size
+            file_size = upload_file.stat().st_size
             
             # Upload to Spaces
-            success = self.uploader.upload_file(file_path, s3_key)
+            success = self.uploader.upload_file(upload_file, s3_key)
             
             if success:
                 # Generate file URL
@@ -208,15 +307,16 @@ class DVRFileHandler(FileSystemEventHandler):
                     file_url = f"https://{SPACES_BUCKET}.{SPACES_REGION}.digitaloceanspaces.com/{s3_key}"
                 
                 # Extract stream information from path
-                # Path format: live/stream_name/timestamp.flv
+                # Path format: live/stream_name/timestamp.flv or timestamp.mp4
                 parts = relative_path.parts
                 stream_app = parts[0] if len(parts) > 0 else 'unknown'
                 stream_name = parts[1] if len(parts) > 1 else 'unknown'
-                filename_timestamp = file_path.stem  # filename without extension
+                filename_timestamp = upload_file.stem  # filename without extension
                 
                 # Prepare file info for webhook
                 file_info = {
-                    'filename': file_path.name,
+                    'filename': upload_file.name,
+                    'original_filename': original_file.name,
                     'file_url': file_url,
                     'file_size': file_size,
                     'upload_time': datetime.now().isoformat(),
@@ -224,26 +324,36 @@ class DVRFileHandler(FileSystemEventHandler):
                     'stream_name': stream_name,
                     'timestamp': filename_timestamp,
                     'bucket': SPACES_BUCKET,
-                    'region': SPACES_REGION
+                    'region': SPACES_REGION,
+                    'format': upload_file.suffix[1:]  # mp4 or flv
                 }
                 
                 # Send webhook notification
                 self.webhook.notify(file_info)
                 
                 # Create marker file in uploaded directory
-                uploaded_marker = UPLOADED_DIR / relative_path.parent / f"{file_path.name}.uploaded"
+                uploaded_marker = UPLOADED_DIR / relative_path.parent / f"{original_file.name}.uploaded"
                 uploaded_marker.parent.mkdir(parents=True, exist_ok=True)
                 marker_content = f"Uploaded at {datetime.now().isoformat()}\n"
+                marker_content += f"Original: {original_file.name}\n"
+                marker_content += f"Uploaded: {upload_file.name}\n"
                 marker_content += f"URL: {file_url}\n"
                 marker_content += f"Size: {file_size} bytes\n"
+                marker_content += f"Format: {upload_file.suffix[1:]}\n"
                 uploaded_marker.write_text(marker_content)
                 
-                # Optionally delete local file after successful upload
+                # Optionally delete local files after successful upload
                 if DELETE_AFTER_UPLOAD:
-                    logger.info(f"Deleting local file: {file_path.name}")
-                    file_path.unlink()
+                    logger.info(f"Deleting local files...")
+                    original_file.unlink()
+                    if upload_file != original_file and upload_file.exists():
+                        upload_file.unlink()
                 else:
-                    logger.info(f"Keeping local file: {file_path.name}")
+                    logger.info(f"Keeping local files")
+                    # Clean up MP4 if we're keeping the original FLV
+                    if upload_file != original_file and upload_file.exists() and original_file.suffix == '.flv':
+                        logger.info(f"Cleaning up temporary MP4: {upload_file.name}")
+                        upload_file.unlink()
         
         except Exception as e:
             logger.error(f"Error processing {file_path}: {e}")
@@ -292,6 +402,9 @@ def main():
     logger.info("=" * 60)
     
     try:
+        # Initialize video converter
+        converter = VideoConverter()
+        
         # Initialize uploader
         uploader = S3Uploader()
         
@@ -299,7 +412,7 @@ def main():
         webhook = WebhookNotifier()
         
         # Create file system handler
-        handler = DVRFileHandler(uploader, webhook)
+        handler = DVRFileHandler(uploader, webhook, converter)
         
         # Scan for existing files
         scan_existing_files(handler)

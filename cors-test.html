@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CORS Test</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 900px;
+      margin: 50px auto;
+      padding: 20px;
+    }
+    .test-section {
+      border: 1px solid #ddd;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 8px;
+    }
+    .success {
+      background-color: #d4edda;
+      border-color: #c3e6cb;
+      color: #155724;
+    }
+    .error {
+      background-color: #f8d7da;
+      border-color: #f5c6cb;
+      color: #721c24;
+    }
+    .info {
+      background-color: #d1ecf1;
+      border-color: #bee5eb;
+      color: #0c5460;
+    }
+    button {
+      background-color: #007bff;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin: 5px;
+    }
+    button:hover {
+      background-color: #0056b3;
+    }
+    pre {
+      background-color: #f4f4f4;
+      padding: 10px;
+      border-radius: 4px;
+      overflow-x: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔍 DigitalOcean Spaces CORS 测试</h1>
+  
+  <div class="test-section info">
+    <h2>测试文件</h2>
+    <p><strong>URL:</strong> <code id="file-url">https://srs-tsport.sgp1.cdn.digitaloceanspaces.com/dvr/live/stream_7_68fa0d1b38d61/1761294005465.flv</code></p>
+    <button onclick="testCORS()">🧪 测试 CORS</button>
+    <button onclick="testWithFetch()">📡 测试 Fetch API</button>
+    <button onclick="openFileInNewTab()">🔗 在新标签打开</button>
+  </div>
+
+  <div id="results"></div>
+
+  <div class="test-section">
+    <h2>📋 配置CORS的步骤</h2>
+    <ol>
+      <li>登录 <a href="https://cloud.digitalocean.com/spaces" target="_blank">DigitalOcean Spaces控制台</a></li>
+      <li>选择你的Space: <strong>srs-tsport</strong></li>
+      <li>点击 <strong>Settings</strong> 标签</li>
+      <li>找到 <strong>CORS Configurations</strong></li>
+      <li>添加以下配置:</li>
+    </ol>
+    <pre>{
+  "AllowedOrigins": ["*"],
+  "AllowedMethods": ["GET", "HEAD"],
+  "AllowedHeaders": ["*"],
+  "MaxAgeSeconds": 3600
+}</pre>
+  </div>
+
+  <script>
+    const fileUrl = 'https://srs-tsport.sgp1.cdn.digitaloceanspaces.com/dvr/live/stream_7_68fa0d1b38d61/1761294005465.flv';
+    
+    function showResult(title, message, type) {
+      const resultsDiv = document.getElementById('results');
+      const resultSection = document.createElement('div');
+      resultSection.className = `test-section ${type}`;
+      resultSection.innerHTML = `
+        <h3>${title}</h3>
+        <div>${message}</div>
+      `;
+      resultsDiv.appendChild(resultSection);
+    }
+
+    function clearResults() {
+      document.getElementById('results').innerHTML = '';
+    }
+
+    async function testCORS() {
+      clearResults();
+      showResult('🧪 测试开始', '检查CORS配置...', 'info');
+
+      try {
+        const response = await fetch(fileUrl, {
+          method: 'HEAD',
+          mode: 'cors'
+        });
+
+        console.log('Response headers:', response.headers);
+        
+        const corsHeaders = {
+          'access-control-allow-origin': response.headers.get('access-control-allow-origin'),
+          'access-control-allow-methods': response.headers.get('access-control-allow-methods'),
+          'access-control-allow-headers': response.headers.get('access-control-allow-headers')
+        };
+
+        console.log('CORS headers:', corsHeaders);
+
+        if (corsHeaders['access-control-allow-origin']) {
+          showResult(
+            '✅ CORS配置正确',
+            `
+              <p><strong>Status:</strong> ${response.status} ${response.statusText}</p>
+              <p><strong>Access-Control-Allow-Origin:</strong> ${corsHeaders['access-control-allow-origin']}</p>
+              <p><strong>Access-Control-Allow-Methods:</strong> ${corsHeaders['access-control-allow-methods'] || 'N/A'}</p>
+              <p><strong>Content-Type:</strong> ${response.headers.get('content-type')}</p>
+              <p><strong>Content-Length:</strong> ${response.headers.get('content-length')} bytes</p>
+              <p>文件应该可以正常播放！</p>
+            `,
+            'success'
+          );
+        } else {
+          showResult(
+            '⚠️ 未检测到CORS头',
+            `
+              <p><strong>Status:</strong> ${response.status}</p>
+              <p>响应成功，但没有CORS头。这可能导致浏览器阻止访问。</p>
+              <p>请按照上面的步骤配置CORS。</p>
+            `,
+            'error'
+          );
+        }
+      } catch (error) {
+        console.error('CORS test error:', error);
+        showResult(
+          '❌ CORS测试失败',
+          `
+            <p><strong>错误:</strong> ${error.message}</p>
+            <p>这通常表示CORS未配置或配置不正确。</p>
+            <p><strong>可能的原因:</strong></p>
+            <ul>
+              <li>CORS未在DigitalOcean Spaces配置</li>
+              <li>文件不存在 (404)</li>
+              <li>网络连接问题</li>
+            </ul>
+            <p><strong>解决方案:</strong> 请按照上面的步骤配置CORS</p>
+          `,
+          'error'
+        );
+      }
+    }
+
+    async function testWithFetch() {
+      clearResults();
+      showResult('📡 使用Fetch API测试', '尝试获取文件...', 'info');
+
+      try {
+        const response = await fetch(fileUrl);
+        const blob = await response.blob();
+        
+        showResult(
+          '✅ Fetch成功',
+          `
+            <p><strong>Status:</strong> ${response.status}</p>
+            <p><strong>文件大小:</strong> ${blob.size} bytes (${(blob.size / 1024 / 1024).toFixed(2)} MB)</p>
+            <p><strong>类型:</strong> ${blob.type}</p>
+            <p>文件可以成功获取！CORS配置正确。</p>
+          `,
+          'success'
+        );
+      } catch (error) {
+        showResult(
+          '❌ Fetch失败',
+          `
+            <p><strong>错误:</strong> ${error.message}</p>
+            <p>无法获取文件。请检查CORS配置。</p>
+          `,
+          'error'
+        );
+      }
+    }
+
+    function openFileInNewTab() {
+      window.open(fileUrl, '_blank');
+      showResult(
+        'ℹ️ 新标签打开',
+        '<p>如果文件可以直接在浏览器打开，说明文件存在且可访问。</p><p>如果看到下载提示，这是正常的FLV行为。</p>',
+        'info'
+      );
+    }
+
+    // 自动运行测试
+    window.addEventListener('load', () => {
+      console.log('Page loaded, click button to test CORS');
+    });
+  </script>
+</body>
+</html>
