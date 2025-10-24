@@ -22,6 +22,8 @@ services:
       - ./hls:/usr/local/srs/objs/nginx/html/hls
       # Upload script
       - ./scripts:/scripts
+    extra_hosts:
+      - "tsport-new.localhost:host-gateway"
     restart: unless-stopped
     environment:
       - CANDIDATE=${CANDIDATE}
